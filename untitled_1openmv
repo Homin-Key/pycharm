@@ -1,0 +1,26 @@
+import openmv
+
+# Initialize cameras
+cam1 = openmv.mv.MV(17)
+cam2 = openmv.mv.MV(18)
+cam3 = openmv.mv.MV(19)
+
+# Set April tag detection on for all cameras
+cam1.tag_detect_init()
+cam2.tag_detect_init()
+cam3.tag_detect_init()
+
+while True:
+    # Capture an image from each camera
+    img1 = cam1.snapshot()
+    img2 = cam2.snapshot()
+    img3 = cam3.snapshot()
+
+    # Detect April tags in the images
+    tags1 = cam1.tag_detect(img1)
+    tags2 = cam2.tag_detect(img2)
+    tags3 = cam3.tag_detect(img3)
+
+    # Do something with the detected tags
+    for tag in tags1 + tags2 + tags3:
+        print(tag)
