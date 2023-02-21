@@ -1,18 +1,17 @@
-
-# need to install pyserial package.
+#!/usr/local/bin/python
 from serial.tools import list_ports
 import serial
 import numpy as np
 from numpy import pi
 from time import sleep
-import roboticstoolbox as rtb
-from spatialmath.base import *
-from spatialmath import SE3
+"import roboticstoolbox as rtb"
+"from spatialmath.base import *"
+"from spatialmath import SE3"
 import logging
 from typing import NamedTuple
-from spatialmath import *
+"from spatialmath import *"
 
-
+"(rtb.DHRobot)"
 """
 Naming convention
 servo angles: -90 deg - +90 deg
@@ -42,231 +41,227 @@ class Tag(NamedTuple):
     cam_z: float    # x position wrt Camera frame
 
 
-class XArm(rtb.DHRobot):
+class XArm:
+	HEADER = b'\x55'b'\x55'
+	COMMAND = 3
 
-    HEADER = b'\x55'b'\x55'
-    COMMAND = 3
+	def __init__(self, simulation_only=False):
+		self.camera_dist_offset = 0.037  # L4 - camera_distance
 
-    def __init__(self, simulation_only=False):
-        self.camera_dist_offset = 0.037  # L4 - camera_distance
+		self.mvcam = None
+		self.curr_joint_angles = None
 
-        self.mvcam = None
-        self.curr_joint_angles = None
+		# dictionary for block locations
+		# for a short tutorial for Python dictionary, visit https://www.w3schools.com/python/python_dictionaries.asp
+		self.block_locations = dict()
 
-        # dictionary for block locations
-        # for a short tutorial for Python dictionary, visit https://www.w3schools.com/python/python_dictionaries.asp
-        self.block_locations = dict()
+		self.B0 = 0.090
+		self.L1 = 0.010     # self.L1 = 0.010 for inverse kinematics
+		self.L2 = 0.105
+		self.L3 = 0.088
+		self.L4 = 0.170
 
-        self.B0 = 0.090
-        self.L1 = 0.010     # self.L1 = 0.010 for inverse kinematics
-        self.L2 = 0.105
-        self.L3 = 0.088
-        self.L4 = 0.170
+		self.camera_dist_offset = 0.037  # L4 - camera_distance
+		self.gripper_close_pos = 2200   # close position
+		self.gripper_open_pos = 1700  # open position
+		self.ordered_joints = ('base', 'shoulder', 'elbow', 'wpitch', 'wroll')
 
-        self.camera_dist_offset = 0.037  # L4 - camera_distance
-        self.gripper_close_pos = 2200   # close position
-        self.gripper_open_pos = 1700  # open position
-        self.ordered_joints = ('base', 'shoulder', 'elbow', 'wpitch', 'wroll')
+		# alpha = direction * theta + offset
+		# where alpha is the servo angle and theta is the joint angle.
+		self.joint_servo_offset = (0, pi/2, pi/4, 0, 0)  # angle offset between joint and servo
+		self.joint_servo_direction = (1, -1, 1, -1, 1)   # 1 or -1
 
-        # alpha = direction * theta + offset
-        # where alpha is the servo angle and theta is the joint angle.
-        self.joint_servo_offset = (0, pi/2, pi/4, 0, 0)  # angle offset between joint and servo
-        self.joint_servo_direction = (1, -1, 1, -1, 1)   # 1 or -1
+		self.max_joint_angle = (pi/2, pi, pi/4, pi/2, pi/2)
+		self.min_joint_angle = (-pi/2, 0, -3*pi/4, -pi/2, -pi/2)
 
-        self.max_joint_angle = (pi/2, pi, pi/4, pi/2, pi/2)
-        self.min_joint_angle = (-pi/2, 0, -3*pi/4, -pi/2, -pi/2)
+		self.plot_axes_limits = [-0.38, 0.38, -0.38, 0.38, 0, 0.47]
 
-        self.plot_axes_limits = [-0.38, 0.38, -0.38, 0.38, 0, 0.47]
+		np.set_printoptions(precision=3, suppress=True)
 
-        np.set_printoptions(precision=3, suppress=True)
+		# Update: super().__init__(...) to rtb.DHRobot.__init__(...)
+		'''rtb.DHRobot.__init__(self,
+		    [rtb.RevoluteMDH(d=self.B0),
+		     rtb.RevoluteMDH(alpha=pi/2, a=self.L1),
+		     rtb.RevoluteMDH(a=self.L2),
+		     rtb.RevoluteMDH(a=self.L3, offset=-pi/2),
+		     rtb.RevoluteMDH(alpha=-pi/2, d=self.L4)],
+		    name="xArm"
+		)'''
 
-        # Update: super().__init__(...) to rtb.DHRobot.__init__(...)
-        rtb.DHRobot.__init__(self,
-            [rtb.RevoluteMDH(d=self.B0),
-             rtb.RevoluteMDH(alpha=pi/2, a=self.L1),
-             rtb.RevoluteMDH(a=self.L2),
-             rtb.RevoluteMDH(a=self.L3, offset=-pi/2),
-             rtb.RevoluteMDH(alpha=-pi/2, d=self.L4)],
-            name="xArm"
-        )
+		self.comm = None
+		self._simulation_only = simulation_only
 
-        self.comm = None
-        self._simulation_only = simulation_only
+		# ADD this for OpenMV Cam
+		self.mvcam = None
 
-        # ADD this for OpenMV Cam
-        self.mvcam = None
+		self.curr_joint_angles = None
 
-        self.curr_joint_angles = None
+		# dictionary for block locations
+		# for short tutorial for Python dictionaries, visit https://www.w3schools.com/python/python_dictionaries.asp
+		self.block_locations = dict()
 
-        # dictionary for block locations
-        # for short tutorial for Python dictionaries, visit https://www.w3schools.com/python/python_dictionaries.asp
-        self.block_locations = dict()
+	def connect(self):
 
-    def connect(self):
+		if self._simulation_only:
+		    print("Simulation-Only mode is enabled.")
+		    print("The robot is not connected.")
+		    return
 
-        if self._simulation_only:
-            print("Simulation-Only mode is enabled.")
-            print("The robot is not connected.")
-            return
+		if isinstance(self.comm, serial.Serial):
+		    print(f"The robot is already connected to {self.comm.port}")
+		    return
 
-        if isinstance(self.comm, serial.Serial):
-            print(f"The robot is already connected to {self.comm.port}")
-            return
+		ports = list_ports.comports()
+		comport = None
+		print(ports)
 
-        ports = list_ports.comports()
-        comport = None
+		for port, desc, hwid in sorted(ports):
+			print(desc)
+			if ('Silicon Labs CP210x' in desc) or ('Prolific USB-to-Serial' in desc):
+				comport = port
+				print("Info: The robot is connecting to")
+				print("{}: {} [{}]".format(port, desc, hwid))
+				break
 
-        for port, desc, hwid in sorted(ports):
-            if ('Silicon Labs CP210x' in desc) or ('Prolific USB-to-Serial' in desc):
-                comport = port
-                print("Info: The robot is connecting to")
-                print("{}: {} [{}]".format(port, desc, hwid))
-                break
+		if comport is None:
+		    print("Error: Serial port is not available.")
+		    print("The robot is not connected.")
+		    self._simulation_only = True
+		    return
 
-        if comport is None:
-            print("Error: Serial port is not available.")
-            print("The robot is not connected.")
-            self._simulation_only = True
-            return
+		# A serial port is found.  Try to connect.
+		try:
+		    self.comm = serial.Serial(
+			port='/dev/ttyACM0',
+			baudrate=9600,
+			parity=serial.PARITY_NONE,
+			stopbits=serial.STOPBITS_ONE,
+			bytesize=serial.EIGHTBITS
+		    )
+		    print(f"Info: The robot is connected to {comport}")
 
-        # A serial port is found.  Try to connect.
-        try:
-            self.comm = serial.Serial(
-                port=comport,
-                baudrate=9600,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                bytesize=serial.EIGHTBITS
-            )
-            print(f"Info: The robot is connected to {comport}")
+		except serial.SerialException:
+		    print("Error: Serial port is not available.")
+		    print("The robot is not connected.")
+		    print("Simulation-Only mode is enabled.")
+		    self._simulation_only = True
 
-        except serial.SerialException:
-            print("Error: Serial port is not available.")
-            print("The robot is not connected.")
-            print("Simulation-Only mode is enabled.")
-            self._simulation_only = True
+	def disconnect(self):
+		if self.comm is not None:
+		    self.comm.close()
 
-    def disconnect(self):
-        if self.comm is not None:
-            self.comm.close()
+	def connect_mvcam(self):
 
-    def connect_mvcam(self):
+		if isinstance(self.mvcam, serial.Serial):
+		    print(f"The robot is already connected to {self.comm.port}")
+		    return 
 
-        if isinstance(self.mvcam, serial.Serial):
-            print(f"The robot is already connected to {self.comm.port}")
-            return
+		ports = list_ports.comports()
+		comport = None
 
-        ports = list_ports.comports()
-        comport = None
+		for port, desc, hwid in sorted(ports):
+			if 'OpenMV Virtual Comm Port in FS Mode' in desc:
+				comport = port
+				print("Info: OpenMV Cam is connected to")
+				print("{}: {} [{}]".format(port, desc, hwid))
+				break
 
-        for port, desc, hwid in sorted(ports):
-            if 'USB Serial Device' in desc:
-                comport = port
-                print("Info: OpenMV Cam is connected to")
-                print("{}: {} [{}]".format(port, desc, hwid))
-                break
+		if comport is None:
+		    print("Error: Serial port for OpenMV is not available.")
+		    print("OpenMV Cam is not connected.")
+		    return
 
-        if comport is None:
-            print("Error: Serial port for OpenMV is not available.")
-            print("OpenMV Cam is not connected.")
-            return
+		# A serial port is found.  Try to connect.
+		try:
+		    self.mvcam = serial.Serial(
+			port='/dev/ttyACM0',
+			baudrate=115200,
+			parity=serial.PARITY_NONE,
+			stopbits=serial.STOPBITS_ONE,
+			bytesize=serial.EIGHTBITS,
+			timeout=0.01
+		    )
+		    print(f"Info: OpenMV is connected to {comport}")
 
-        # A serial port is found.  Try to connect.
-        try:
-            self.mvcam = serial.Serial(
-                port=comport,
-                baudrate=115200,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                bytesize=serial.EIGHTBITS,
-                timeout=0.01
-            )
-            print(f"Info: OpenMV is connected to {comport}")
-
-        except serial.SerialException:
-            print("Error: Serial port is not available.")
-            print("OpenMV is not connected.")
+		except serial.SerialException:
+		    print("Error: Serial port is not available.")
+		    print("OpenMV is not connected.")
 
 
-    @property
-    def simulation_only(self):
-        return self._simulation_only
+	@property
+	def simulation_only(self):
+		return self._simulation_only
 
-    @simulation_only.setter
-    def simulation_only(self, value):
-        self._simulation_only = value
+	@simulation_only.setter
+	def simulation_only(self, value):
+		self._simulation_only = value
 
-    def is_serial_open(self):
-        if self.comm is None:
-            return False
-        else:
-            return self.comm.isOpen()
+	def is_serial_open(self):
+		if self.comm is None:
+		    return False
+		else:
+		    return self.comm.isOpen()
 
-    @staticmethod
-    def normalize_angle(angle):
-        """ Normalize an angle so that it is between -pi and pi.
-        :param angle: Angle in radian in a range of [-2*pi, 2*pi]
-        :return: Normalized angle.
-        """
-        if angle > pi:
-            return angle - 2*pi
-        elif angle < -pi:
-            return angle + 2*pi
-        else:
-            return angle
+	@staticmethod
+	def normalize_angle(angle):
+		if angle > pi:
+			return angle - 2*pi
+		elif angle < -pi:
+			return angle + 2*pi
+		else:
+			return angle
 
 
 
 def test_openmv():
 
-        np.set_printoptions(precision=3, suppress=True)
+	np.set_printoptions(precision=3, suppress=True)
 
-        robot = XArm(simulation_only=True)
-        robot.connect_mvcam()
-        robot.mvcam.flushInput()
+	robot = XArm(simulation_only=True)
+	robot.connect_mvcam()
+	robot.mvcam.flushInput()
 
-        while True:
+	while True:
 
-            #sleep(0.1)
+		#sleep(0.1)
 
-            # Transmit #H% to OpenMV to request any AprilTag detections
-            robot.mvcam.write(b'#H%')
+		# Transmit #H% to OpenMV to request any AprilTag detections
+		robot.mvcam.write(b'#H%')
 
-            # Receive data from OpenMV
-            data = robot.mvcam.readline().decode('ascii').strip().split(',')
+		# Receive data from OpenMV
+		data = robot.mvcam.readline().decode('ascii').strip().split(',')
 
-            # No detection. Skip the rest.
-            if len(data) <= 1:
-                continue
+		# No detection. Skip the rest.
+		if len(data) <= 1:
+			continue
 
-            # Number of Apriltags detected.
-            num_tags = int(data.pop(0))
+		# Number of Apriltags detected.
+		num_tags = int(data.pop(0))
 
-            # list to store Tag objects
-            tags = list()
+		# list to store Tag objects
+		tags = list()
 
-            # Create a Tag object for each Apriltag detected and
-            # append it to the tags list.
-            for i in range(num_tags):
+		# Create a Tag object for each Apriltag detected and
+		# append it to the tags list.
+		for i in range(num_tags):
 
-                # Read tag ID.
-                tagid = int(data[4*i])
+			# Read tag ID.
+			tagid = int(data[4*i])
 
-                # Read the position of the tag wrt the camera frame
-                cam_x, cam_y, cam_z = map(float, data[4*i+1:4+4*i])
+			# Read the position of the tag wrt the camera frame
+			cam_x, cam_y, cam_z = map(float, data[4*i+1:4+4*i])
 
-                # Ignore the AprilTag position wrt the base frame -> set it (0,0,0) for now.
-                tags.append(Tag(tagid, 0, 0, 0, cam_x, cam_y, cam_z))   #
+			# Ignore the AprilTag position wrt the base frame -> set it (0,0,0) for now.
+			tags.append(Tag(tagid, 0, 0, 0, cam_x, cam_y, cam_z))   #
 
-            # Print the AprilTags detected by the OpemMV camera.
-            for tag in tags:
-                print(['%0.4f'% t for t in tag])
+		# Print the AprilTags detected by the OpemMV camera.
+		for tag in tags:
+			print(['%0.4f'% t for t in tag])
 
 
 if __name__ == '__main__':
 
-    logging.basicConfig(level=logging.INFO)
-
-    test_openmv()
+	logging.basicConfig(level=logging.INFO)
+	test_openmv()
 
 
